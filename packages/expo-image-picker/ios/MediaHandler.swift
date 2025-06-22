@@ -34,8 +34,7 @@ internal struct MediaHandler {
           let itemProvider = selectedItem.itemProvider
 
           if itemProvider.canLoadObject(ofClass: PHLivePhoto.self)
-            && options.mediaTypes.contains(.livePhotos)
-          {
+            && options.mediaTypes.contains(.livePhotos) {
             return try await handleLivePhoto(from: selectedItem)
           }
           if itemProvider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
@@ -380,8 +379,7 @@ internal struct MediaHandler {
       if let assetId = selectedVideo.assetIdentifier,
         let fs = self.fileSystem,
         let fastUrl = try? await VideoUtils.tryCopyingOriginalVideoFromMetadataOnlyAsset(
-          assetId: assetId, fileSystem: fs)
-      {
+          assetId: assetId, fileSystem: fs) {
         log.info(
           "expo-image-picker: Using metadata-only fast path for video – original resource copied without export."
         )
@@ -465,8 +463,7 @@ internal struct MediaHandler {
   }
 
   private func generatePairedUrls(photoFileExtension: String, videoFileExtension: String) throws
-    -> (URL, URL)
-  {
+    -> (URL, URL) {
     let parsedVideoFileExtension =
       videoFileExtension.starts(with: ".")
       ? String(videoFileExtension.dropFirst()) : videoFileExtension

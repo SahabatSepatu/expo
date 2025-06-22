@@ -152,8 +152,7 @@ internal struct ImageUtils {
    Reads base64 representation of the image data. If the data is `nil` fallbacks to reading the data from the url.
    */
   static func readBase64From(imageData: Data?, orImageFileUrl url: URL, tryReadingFile: Bool) throws
-    -> String?
-  {
+    -> String? {
     if tryReadingFile {
       do {
         let data = try Data(contentsOf: url)
@@ -252,8 +251,7 @@ internal struct ImageUtils {
   static func readExifFrom(data: Data) -> ExifInfo? {
     if let cgImageSource = CGImageSourceCreateWithData(data as CFData, nil) {
       if let properties = CGImageSourceCopyPropertiesAtIndex(cgImageSource, 0, nil)
-        as? [String: Any]
-      {
+        as? [String: Any] {
         return ImageUtils.readExifFrom(imageMetadata: properties)
       }
     }
