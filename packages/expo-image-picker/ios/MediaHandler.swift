@@ -24,19 +24,33 @@ internal struct MediaHandler {
   }
 
   internal func handleMultipleMedia(_ selection: [PHPickerResult]) async throws -> [AssetInfo] {
-    return try await asyncMap(selection) { selectedItem in
-      let itemProvider = selectedItem.itemProvider
+    // Process each selected asset in parallel.
+    // TaskGroup is faster than the old serial asyncMap and still
+    // propagates the first thrown error and preserves result order.
+    return try await withThrowingTaskGroup(of: AssetInfo.self) { group in
+      // Add a task for each selected item
+      for selectedItem in selection {
+        group.addTask {
+          let itemProvider = selectedItem.itemProvider
 
-      if itemProvider.canLoadObject(ofClass: PHLivePhoto.self) && options.mediaTypes.contains(.livePhotos) {
-        return try await handleLivePhoto(from: selectedItem)
+          if itemProvider.canLoadObject(ofClass: PHLivePhoto.self) && options.mediaTypes.contains(.livePhotos) {
+            return try await handleLivePhoto(from: selectedItem)
+          }
+          if itemProvider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
+            return try await handleImage(from: selectedItem)
+          }
+          if itemProvider.hasItemConformingToTypeIdentifier(UTType.movie.identifier) {
+            return try await handleVideo(from: selectedItem)
+          }
+          throw InvalidMediaTypeException(itemProvider.registeredTypeIdentifiers.first)
+        }
       }
-      if itemProvider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
-        return try await handleImage(from: selectedItem)
+
+      var results: [AssetInfo] = []
+      for try await asset in group {
+        results.append(asset)
       }
-      if itemProvider.hasItemConformingToTypeIdentifier(UTType.movie.identifier) {
-        return try await handleVideo(from: selectedItem)
-      }
-      throw InvalidMediaTypeException(itemProvider.registeredTypeIdentifiers.first)
+      return results
     }
   }
 
