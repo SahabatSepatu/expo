@@ -314,9 +314,12 @@ internal struct ImageUtils {
     return destinationData as Data
   }
 
-  /// Reads pixel dimensions from an image file without loading full raster data.
-  /// - Parameter url: Location of the image file.
-  /// - Returns: The width and height as `CGSize` or `nil` if unavailable.
+  /*
+   * Extracts the pixel dimensions from an image file.
+   * This method efficiently reads metadata without loading the entire image into memory.
+   * @param url The file URL of the image to analyze
+   * @return A CGSize containing the width and height, or nil if the dimensions cannot be determined
+   */
   static func readSizeFrom(url: URL) -> CGSize? {
     guard let imageSource = CGImageSourceCreateWithURL(url as CFURL, nil) else {
       return nil

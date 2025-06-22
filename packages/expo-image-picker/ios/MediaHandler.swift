@@ -78,6 +78,7 @@ internal struct MediaHandler {
 
       let exif = options.exif ? await ImageUtils.readExifFrom(mediaInfo: mediaInfo) : nil
 
+      // Read dimensions using ImageUtils to avoid full decode in the fast path.
       var dimensions = ImageUtils.readSizeFrom(url: targetUrl)
       if dimensions == nil {
         // Fallback: decode minimally with UIImage to get size.
@@ -170,7 +171,8 @@ internal struct MediaHandler {
 
     log.info("expo-image-picker: Using slow path for image – no fast path available.")
 
-    // Slow path (existing implementation): load data representation, optionally compress/edit
+    // If fast copy path failed or was not available because of the props
+    // use slow path (existing implementation)
     let rawData = try await itemProvider.loadImageDataRepresentation()
 
     guard let image = UIImage(data: rawData) else {
