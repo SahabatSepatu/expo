@@ -4,6 +4,7 @@ import ExpoModulesCore
 import MobileCoreServices
 import Photos
 import PhotosUI
+import UniformTypeIdentifiers
 
 internal struct MediaHandler {
   internal weak var fileSystem: EXFileSystemInterface?
@@ -77,11 +78,20 @@ internal struct MediaHandler {
 
       let exif = options.exif ? await ImageUtils.readExifFrom(mediaInfo: mediaInfo) : nil
 
+      var dimensions = ImageUtils.readSizeFrom(url: targetUrl)
+      if dimensions == nil {
+        // Fallback: decode minimally with UIImage to get size.
+        if let img = UIImage(contentsOfFile: targetUrl.path) {
+          dimensions = CGSize(width: img.size.width, height: img.size.height)
+        }
+      }
+      let size = dimensions ?? .zero
+
       return AssetInfo(
         assetId: asset?.localIdentifier,
         uri: targetUrl.absoluteString,
-        width: image.size.width,
-        height: image.size.height,
+        width: Double(size.width),
+        height: Double(size.height),
         fileName: fileName,
         fileSize: fileSize,
         mimeType: mimeType,
@@ -97,6 +107,70 @@ internal struct MediaHandler {
 
   private func handleImage(from selectedImage: PHPickerResult) async throws -> AssetInfo {
     let itemProvider = selectedImage.itemProvider
+
+    // Fast-path: copy original file when no processing is required and current representation is requested.
+    let fastPath = !options.allowsEditing && options.quality >= 1 && options.preferredAssetRepresentationMode == .current
+
+    if fastPath {
+      // Attempt to obtain original file URL
+      if let targetUrl = try? await withCheckedThrowingContinuation({ (continuation: CheckedContinuation<URL, Error>) in
+        itemProvider.loadFileRepresentation(forTypeIdentifier: UTType.image.identifier) { url, error in
+          guard let srcUrl = url else {
+            return continuation.resume(throwing: error ?? FailedToReadImageException())
+          }
+          do {
+            let destUrl = try generateUrl(withFileExtension: "." + srcUrl.pathExtension)
+            try FileManager.default.copyItem(at: srcUrl, to: destUrl)
+            continuation.resume(returning: destUrl)
+          } catch {
+            continuation.resume(throwing: error)
+          }
+        }
+      }) {
+        let cachedUrl = targetUrl
+        let fileExtension = "." + cachedUrl.pathExtension
+
+        // Read dimensions using ImageUtils to avoid full decode
+        var dimensions = ImageUtils.readSizeFrom(url: cachedUrl)
+        if dimensions == nil {
+          // Fallback: decode minimally with UIImage to get size.
+          if let img = UIImage(contentsOfFile: cachedUrl.path) {
+            dimensions = CGSize(width: img.size.width, height: img.size.height)
+          }
+        }
+        let size = dimensions ?? .zero
+        let fileSize = getFileSize(from: cachedUrl)
+        let mimeType = getMimeType(from: cachedUrl.pathExtension)
+        let fileName = itemProvider.suggestedName.map { $0 + fileExtension }
+
+        // Conditionally read raw data only if needed to avoid unnecessary I/O
+        var rawData: Data?
+        if options.base64 || options.exif {
+          rawData = try? Data(contentsOf: cachedUrl)
+        }
+
+        let base64 = options.base64 ? rawData?.base64EncodedString() : nil
+        let exif = options.exif ? (rawData.flatMap { ImageUtils.readExifFrom(data: $0) }) : nil
+
+        log.info("expo-image-picker: Using fast path for image – no slow path available.")
+
+        return AssetInfo(
+          assetId: selectedImage.assetIdentifier,
+          uri: cachedUrl.absoluteString,
+          width: Double(size.width),
+          height: Double(size.height),
+          fileName: fileName,
+          fileSize: fileSize,
+          mimeType: mimeType,
+          base64: base64,
+          exif: exif
+        )
+      }
+    }
+
+    log.info("expo-image-picker: Using slow path for image – no fast path available.")
+
+    // Slow path (existing implementation): load data representation, optionally compress/edit
     let rawData = try await itemProvider.loadImageDataRepresentation()
 
     guard let image = UIImage(data: rawData) else {
@@ -120,11 +194,20 @@ internal struct MediaHandler {
     let exif = options.exif ? ImageUtils.readExifFrom(data: rawData) : nil
     let base64 = options.base64 ? imageData?.base64EncodedString() : nil
 
+    var dimensions = ImageUtils.readSizeFrom(url: targetUrl)
+    if dimensions == nil {
+      // Fallback: decode minimally with UIImage to get size.
+      if let img = UIImage(contentsOfFile: targetUrl.path) {
+        dimensions = CGSize(width: img.size.width, height: img.size.height)
+      }
+    }
+    let size = dimensions ?? .zero
+
     return AssetInfo(
       assetId: selectedImage.assetIdentifier,
       uri: targetUrl.absoluteString,
-      width: image.size.width,
-      height: image.size.height,
+      width: Double(size.width),
+      height: Double(size.height),
       fileName: fileName,
       fileSize: fileSize,
       mimeType: mimeType,
@@ -216,6 +299,10 @@ internal struct MediaHandler {
       throw FailedToReadVideoException()
     }
 
+    if options.videoExportPreset == .passthrough {
+      log.info("expo-image-picker: Using fast path for legacy video – passthrough without transcoding.")
+    }
+
     let targetUrl = try generateUrl(withFileExtension: ".mov")
 
     try VideoUtils.tryCopyingVideo(at: pickedVideoUrl, to: targetUrl)
@@ -255,24 +342,34 @@ internal struct MediaHandler {
       return try generateUrl(withFileExtension: ".\(tmpUrl.pathExtension)")
     }
 
-    // In case of passthrough, we want original file extension, mp4 otherwise
-    // TODO: (barthap) Support other file extensions?
-    let transcodeFileType = AVFileType.mp4
-    let transcodeFileExtension = ".mp4"
-    let mimeType = getMimeType(from: videoUrl.pathExtension)
+    // Decide whether we need to transcode.
+    let isPassthrough = options.videoExportPreset == .passthrough
 
-    // Transcoding may need a separate url
-    let transcodedUrl = try generateUrl(withFileExtension: transcodeFileExtension)
+    // Keep original extension for passthrough, otherwise use mp4.
+    let originalFileExtension = ".\(videoUrl.pathExtension)"
+    let transcodeFileExtension = isPassthrough ? originalFileExtension : ".mp4"
+    let transcodeFileType: AVFileType = .mp4
 
-    let targetUrl = try await VideoUtils.transcodeVideoAsync(
-      sourceAssetUrl: videoUrl,
-      destinationUrl: transcodedUrl,
-      outputFileType: transcodeFileType,
-      exportPreset: options.videoExportPreset
-    )
+    let finalUrl: URL
+    if isPassthrough {
+      log.info("expo-image-picker: Using fast path for video – passthrough without transcoding.")
+      finalUrl = videoUrl
+    } else {
+      log.info("expo-image-picker: Slow path for video – transcoding with preset \(options.videoExportPreset)")
+      // Create destination url for transcoded video
+      let transcodedUrl = try generateUrl(withFileExtension: transcodeFileExtension)
+      finalUrl = try await VideoUtils.transcodeVideoAsync(
+        sourceAssetUrl: videoUrl,
+        destinationUrl: transcodedUrl,
+        outputFileType: transcodeFileType,
+        exportPreset: options.videoExportPreset
+      )
+    }
+
+    let mimeType = getMimeType(from: finalUrl.pathExtension)
     let fileName = selectedVideo.itemProvider.suggestedName.map { $0 + transcodeFileExtension }
 
-    return try buildVideoResult(for: targetUrl, withName: fileName, mimeType: mimeType, assetId: selectedVideo.assetIdentifier)
+    return try buildVideoResult(for: finalUrl, withName: fileName, mimeType: mimeType, assetId: selectedVideo.assetIdentifier)
   }
 
   // MARK: - utils

@@ -3,6 +3,8 @@
 import Photos
 import UniformTypeIdentifiers
 import ExpoModulesCore
+import ImageIO
+import CoreGraphics
 
 internal struct ImageUtils {
   static func readImageFrom(mediaInfo: MediaInfo, shouldReadCroppedImage: Bool) -> UIImage? {
@@ -310,5 +312,20 @@ internal struct ImageUtils {
       throw FailedToExportGifException()
     }
     return destinationData as Data
+  }
+
+  /// Reads pixel dimensions from an image file without loading full raster data.
+  /// - Parameter url: Location of the image file.
+  /// - Returns: The width and height as `CGSize` or `nil` if unavailable.
+  static func readSizeFrom(url: URL) -> CGSize? {
+    guard let imageSource = CGImageSourceCreateWithURL(url as CFURL, nil) else {
+      return nil
+    }
+    guard let properties = CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [CFString: Any],
+          let width = properties[kCGImagePropertyPixelWidth] as? CGFloat,
+          let height = properties[kCGImagePropertyPixelHeight] as? CGFloat else {
+      return nil
+    }
+    return CGSize(width: width, height: height)
   }
 }
