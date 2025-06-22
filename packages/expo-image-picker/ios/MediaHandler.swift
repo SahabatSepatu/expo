@@ -336,6 +336,20 @@ internal struct MediaHandler {
   }
 
   private func handleVideo(from selectedVideo: PHPickerResult) async throws -> AssetInfo {
+    // Fast path for videos where only metadata was adjusted in Photos (no re-encode)
+    if #available(iOS 15.0, *) {
+      if let assetId = selectedVideo.assetIdentifier,
+         let fs = self.fileSystem,
+         let fastUrl = try? await VideoUtils.tryCopyingOriginalVideoFromMetadataOnlyAsset(assetId: assetId, fileSystem: fs) {
+        log.info("expo-image-picker: Using metadata-only fast path for video – original resource copied without export.")
+
+        let mimeType = getMimeType(from: fastUrl.pathExtension)
+        let fileName = selectedVideo.itemProvider.suggestedName
+
+        return try buildVideoResult(for: fastUrl, withName: fileName, mimeType: mimeType, assetId: assetId)
+      }
+    }
+
     let videoUrl = try await VideoUtils.loadVideoRepresentation(provider: selectedVideo.itemProvider) { tmpUrl in
       // We need to copy the result into a place that we control, because the picker
       // can remove the original file during conversion.

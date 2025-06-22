@@ -1,6 +1,9 @@
 // Copyright 2024-present 650 Industries. All rights reserved.
 
 import AVFoundation
+import UniformTypeIdentifiers
+import Photos
+import ExpoModulesCore
 
 internal struct VideoUtils {
   static func tryCopyingVideo(at: URL, to: URL) throws {
@@ -75,21 +78,50 @@ internal struct VideoUtils {
 
   static func loadVideoRepresentation(provider: NSItemProvider, urlTransformer: @escaping (URL) throws -> URL) async throws -> URL {
     return try await withCheckedThrowingContinuation { continuation in
-      provider.loadFileRepresentation(forTypeIdentifier: UTType.movie.identifier) { url, error in
+      let typeId = UTType.movie.identifier
+
+      provider.loadFileRepresentation(forTypeIdentifier: typeId) { url, error in
         guard let url else {
           return continuation.resume(throwing: FailedToReadVideoException().causedBy(error))
         }
         do {
-          // The provided URL is only temporary – the system deletes that file when the completion handler returns.
-          // Since we're using it asynchronously, we need to copy the video to another location.
           let newUrl = try urlTransformer(url)
           try VideoUtils.tryCopyingVideo(at: url, to: newUrl)
-
           continuation.resume(returning: newUrl)
         } catch {
           continuation.resume(throwing: error)
         }
       }
     }
+  }
+
+  /// Attempts to fetch the original video resource from `PHAsset` when the asset has only metadata adjustments.
+  /// Returns destination URL if successful, otherwise nil.
+  @available(iOS 15.0, *)
+  static func tryCopyingOriginalVideoFromMetadataOnlyAsset(assetId: String, fileSystem: EXFileSystemInterface) async throws -> URL? {
+    let fetch = PHAsset.fetchAssets(withLocalIdentifiers: [assetId], options: nil)
+    guard let asset = fetch.firstObject else { return nil }
+
+    let resources = PHAssetResource.assetResources(for: asset)
+    let hasAdjustment = resources.contains { $0.type == .adjustmentData }
+    let hasVideoResource = resources.contains { $0.type == .video || $0.type == .fullSizeVideo }
+
+    guard hasAdjustment && hasVideoResource else {
+      return nil
+    }
+
+    guard let videoResource = resources.first(where: { $0.type == .fullSizeVideo }) ?? resources.first(where: { $0.type == .video }) else {
+      return nil
+    }
+
+    // Generate destination URL
+    let directory = fileSystem.cachesDirectory.appending(
+      fileSystem.cachesDirectory.hasSuffix("/") ? "" : "/ImagePicker")
+    let path = fileSystem.generatePath(inDirectory: directory, withExtension: ".mov")
+    let dstUrl = URL(fileURLWithPath: path)
+
+    try await PHAssetResourceManager.default().writeData(for: videoResource, toFile: dstUrl, options: nil)
+
+    return dstUrl
   }
 }
